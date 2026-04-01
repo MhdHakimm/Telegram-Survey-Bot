@@ -37,12 +37,15 @@ def main():
 
     # Register handlers — order matters:
     # ConversationHandlers must come before generic CommandHandlers
-    app.add_handler(get_admin_handler())
+    handlers = get_admin_handler()
+
+    for h in handlers:
+        app.add_handler(h)
     app.add_handler(get_survey_handler())
     for handler in get_common_handlers():
         app.add_handler(handler)
 
-    logger.info("🤖 Bot is running. Press Ctrl+C to stop.")
+    logger.info(" Bot is running. Press Ctrl+C to stop.")
     app.run_polling(drop_pending_updates=True)
 
 
