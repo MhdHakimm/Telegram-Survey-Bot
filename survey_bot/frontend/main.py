@@ -206,7 +206,7 @@ if st.session_state.mode == "list":
     if st.button("➕ Create New Survey"):
         st.session_state.title = ""
         st.session_state.questions = []
-        st.session_state.filename = f"survey_{len(surveys)+1}.json"
+        st.session_state.survey_id = None
         st.session_state.mode = "edit"
 
 # ======================================================
