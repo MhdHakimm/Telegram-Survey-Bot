@@ -25,7 +25,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_admin:
         msg += "\n\n🔧 You have *admin* access. Use /admin to manage surveys."
 
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    if update.message:
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    elif update.callback_query:
+        await update.callback_query.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -41,10 +44,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if is_admin:
-        text += (
-            "\n🔧 *Admin Commands*\n"
-            "/admin — Open the admin panel\n"
-        )
+        text += "\n🔧 *Admin Commands*\n" "/admin — Open the admin panel\n"
 
     await update.message.reply_text(text, parse_mode="Markdown")
 
