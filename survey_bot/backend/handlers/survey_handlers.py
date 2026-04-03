@@ -1,8 +1,7 @@
-import sys
 import os
+from dotenv import load_dotenv
 
 from supabase import create_client
-from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -50,6 +49,7 @@ def load_survey_from_db(survey_id):
             "id": q["id"],
             "text": q["question_text"],
             "type": q["question_type"],
+            "meta": q.get("meta", {}) or {},
             "options": [],
         }
 
@@ -77,18 +77,6 @@ def _surveys_kb(surveys):
     )
 
 
-def _likert_kb(q_index):
-    labels = ["1 😞", "2 🙁", "3 😐", "4 🙂", "5 😄"]
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(lbl, callback_data=f"ans_{q_index}_{i}")
-                for i, lbl in enumerate(labels)
-            ]
-        ]
-    )
-
-
 def _mcq_kb(q_index, options):
     return InlineKeyboardMarkup(
         [
@@ -102,7 +90,7 @@ def _mcq_kb(q_index, options):
     )
 
 
-# ── Send Question (button) ────────────────────────────
+# ── Send Question (callback) ───────────────────────────
 async def _send_question(query, context):
     questions = context.user_data["questions"]
     idx = context.user_data["index"]
@@ -113,25 +101,52 @@ async def _send_question(query, context):
     q = questions[idx]
     text = f"*Question {idx+1}/{len(questions)}*\n\n{q['text']}"
 
+    # # IMAGE
+    # if q["type"] == "image" and q["meta"].get("image_url"):
+    #     await query.message.reply_photo(q["meta"]["image_url"])
+
+    # MCQ
     if q["type"] == "mcq":
         await query.edit_message_text(
-            text, reply_markup=_mcq_kb(idx, q["options"]), parse_mode="Markdown"
+            text,
+            reply_markup=_mcq_kb(idx, q["options"]),
+            parse_mode="Markdown",
         )
 
+    # LIKERT
     elif q["type"] == "likert":
+        scale = q["meta"].get("scale", 5)
+
+        buttons = [
+            InlineKeyboardButton(str(i + 1), callback_data=f"ans_{idx}_{i}")
+            for i in range(scale)
+        ]
+
         await query.edit_message_text(
-            text, reply_markup=_likert_kb(idx), parse_mode="Markdown"
+            text,
+            reply_markup=InlineKeyboardMarkup([buttons]),
+            parse_mode="Markdown",
         )
 
+    # TEXT
     elif q["type"] == "text":
         await query.edit_message_text(
-            text + "\n\n(Type your answer)", parse_mode="Markdown"
+            text + "\n\n(Type your answer)",
+            parse_mode="Markdown",
+        )
+
+    # RANKING
+    elif q["type"] == "ranking":
+        num = q["meta"].get("num_items", 3)
+        await query.edit_message_text(
+            text + f"\n\n(Enter {num} items separated by commas)",
+            parse_mode="Markdown",
         )
 
     return False
 
 
-# ── Send Question (text) ──────────────────────────────
+# ── Send Question (message) ────────────────────────────
 async def _send_question_message(update, context):
     questions = context.user_data["questions"]
     idx = context.user_data["index"]
@@ -144,17 +159,36 @@ async def _send_question_message(update, context):
 
     if q["type"] == "mcq":
         await update.message.reply_text(
-            text, reply_markup=_mcq_kb(idx, q["options"]), parse_mode="Markdown"
+            text,
+            reply_markup=_mcq_kb(idx, q["options"]),
+            parse_mode="Markdown",
         )
 
     elif q["type"] == "likert":
+        scale = q["meta"].get("scale", 5)
+
+        buttons = [
+            InlineKeyboardButton(str(i + 1), callback_data=f"ans_{idx}_{i}")
+            for i in range(scale)
+        ]
+
         await update.message.reply_text(
-            text, reply_markup=_likert_kb(idx), parse_mode="Markdown"
+            text,
+            reply_markup=InlineKeyboardMarkup([buttons]),
+            parse_mode="Markdown",
         )
 
     elif q["type"] == "text":
         await update.message.reply_text(
-            text + "\n\n(Type your answer)", parse_mode="Markdown"
+            text + "\n\n(Type your answer)",
+            parse_mode="Markdown",
+        )
+
+    elif q["type"] == "ranking":
+        num = q["meta"].get("num_items", 3)
+        await update.message.reply_text(
+            text + f"\n\n(Enter {num} items separated by commas)",
+            parse_mode="Markdown",
         )
 
     return False
@@ -165,11 +199,22 @@ async def text_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     idx = context.user_data["index"]
     q = context.user_data["questions"][idx]
 
+    user_text = update.message.text
+
     context.user_data["responses"].append(
-        {"question_id": q["id"], "answer_text": update.message.text}
+        {
+            "question_id": q["id"],
+            "answer_text": user_text,
+        }
     )
 
-    context.user_data["index"] += 1
+    # skip logic
+    skip_to = q["meta"].get("skip_to")
+
+    if skip_to:
+        context.user_data["index"] = skip_to - 1
+    else:
+        context.user_data["index"] += 1
 
     done = await _send_question_message(update, context)
 
@@ -180,31 +225,81 @@ async def text_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ANSWERING
 
 
-# ── Finish (FIXED HERE) ───────────────────────────────
-async def _finish_survey(update_or_query, context):
-    user = update_or_query.effective_user
-    user_id = user.id
-    survey_id = context.user_data["survey_id"]
-    responses = context.user_data["responses"]
+# ── BUTTON ANSWER ─────────────────────────────────────
+async def answering_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-    # 🔥 FIX: ensure user exists
+    idx = context.user_data["index"]
+    q = context.user_data["questions"][idx]
+    data = query.data
+
+    if q["type"] == "mcq":
+        option_id = int(data.split("_")[-1])
+        context.user_data["responses"].append(
+            {
+                "question_id": q["id"],
+                "option_id": option_id,
+            }
+        )
+
+    elif q["type"] == "likert":
+        score = int(data.split("_")[-1]) + 1
+        context.user_data["responses"].append(
+            {
+                "question_id": q["id"],
+                "numeric_value": score,
+            }
+        )
+
+    # skip logic
+    skip_to = q["meta"].get("skip_to")
+
+    if skip_to:
+        context.user_data["index"] = skip_to - 1
+    else:
+        context.user_data["index"] += 1
+
+    done = await _send_question(query, context)
+
+    if done:
+        await _finish_survey(query, context)
+        return ConversationHandler.END
+
+    return ANSWERING
+
+
+# ── Finish ────────────────────────────────────────────
+async def _finish_survey(update_or_query, context):
+    # ✅ HANDLE BOTH update + callback_query
+    if hasattr(update_or_query, "effective_user"):
+        user = update_or_query.effective_user
+        chat = update_or_query.effective_chat
+    else:
+        user = update_or_query.from_user
+        chat = update_or_query.message.chat
+
+    user_id = user.id
+
+    # ensure user exists
     supabase.table("user").upsert({"id": user_id, "username": user.username}).execute()
 
-    # create survey_response
+    # create survey response
     res = (
         supabase.table("survey_response")
-        .insert({"survey_id": survey_id, "user_id": user_id})
+        .insert(
+            {
+                "survey_id": context.user_data["survey_id"],
+                "user_id": user_id,
+            }
+        )
         .execute()
     )
-
-    if not res.data:
-        await update_or_query.effective_chat.send_message("Error saving survey.")
-        return
 
     survey_response_id = res.data[0]["id"]
 
     # save answers
-    for r in responses:
+    for r in context.user_data["responses"]:
         supabase.table("response").insert(
             {
                 "survey_response_id": survey_response_id,
@@ -215,7 +310,8 @@ async def _finish_survey(update_or_query, context):
             }
         ).execute()
 
-    await update_or_query.effective_chat.send_message("🎉 Survey completed!")
+    # ✅ USE chat instead of effective_chat
+    await chat.send_message("🎉 Survey completed!")
 
 
 # ── Entry ─────────────────────────────────────────────
@@ -227,17 +323,18 @@ async def surveys_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "Select a survey:", reply_markup=_surveys_kb(surveys)
+        "Select a survey:",
+        reply_markup=_surveys_kb(surveys),
     )
+
     return SELECT_SURVEY
 
 
-# ── Select Survey ─────────────────────────────────────
 async def select_survey_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    survey_id = int(query.data.replace("take_", ""))
+    survey_id = int(query.data.split("_")[1])
     survey = load_survey_from_db(survey_id)
 
     context.user_data.update(
@@ -259,42 +356,9 @@ async def select_survey_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CONFIRM_START
 
 
-# ── Start ─────────────────────────────────────────────
 async def confirm_start_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
-    done = await _send_question(query, context)
-
-    if done:
-        await _finish_survey(query, context)
-        return ConversationHandler.END
-
-    return ANSWERING
-
-
-# ── Answering (buttons) ───────────────────────────────
-async def answering_cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    idx = context.user_data["index"]
-    q = context.user_data["questions"][idx]
-    data = query.data
-
-    if q["type"] == "mcq":
-        option_id = int(data.split("_")[-1])
-        context.user_data["responses"].append(
-            {"question_id": q["id"], "option_id": option_id}
-        )
-
-    elif q["type"] == "likert":
-        score = int(data.split("_")[-1]) + 1
-        context.user_data["responses"].append(
-            {"question_id": q["id"], "numeric_value": score}
-        )
-
-    context.user_data["index"] += 1
 
     done = await _send_question(query, context)
 

@@ -1,8 +1,3 @@
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler
 
@@ -18,17 +13,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"👋 Hello, *{user.first_name}*! Welcome to the Survey Bot!\n\n"
 
     if surveys:
-        msg += f"📋 There are *{len(surveys)}* active survey(s) available.\n\nUse /surveys to participate."
+        msg += (
+            f"📋 There are *{len(surveys)}* active survey(s).\n\nUse /surveys to start."
+        )
     else:
-        msg += "😔 No active surveys right now. Check back soon!"
+        msg += "😔 No active surveys right now."
 
     if is_admin:
-        msg += "\n\n🔧 You have *admin* access. Use /admin to manage surveys."
+        msg += "\n\n🔧 Admin access enabled. Use /admin"
 
-    if update.message:
-        await update.message.reply_text(msg, parse_mode="Markdown")
-    elif update.callback_query:
-        await update.callback_query.message.reply_text(msg, parse_mode="Markdown")
+    await update.effective_chat.send_message(msg, parse_mode="Markdown")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -36,17 +30,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_admin = user_id in ADMIN_IDS
 
     text = (
-        "📖 *Available Commands*\n\n"
-        "/start — Welcome message & survey count\n"
-        "/surveys — Browse & take available surveys\n"
-        "/help — Show this message\n"
-        "/cancel — Cancel the current operation\n"
+        "📖 *Commands*\n\n"
+        "/start — Welcome\n"
+        "/surveys — Take surveys\n"
+        "/help — Help\n"
+        "/cancel — Cancel\n"
     )
 
     if is_admin:
-        text += "\n🔧 *Admin Commands*\n" "/admin — Open the admin panel\n"
+        text += "\n🔧 /admin — Admin panel"
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.effective_chat.send_message(text, parse_mode="Markdown")
 
 
 def get_common_handlers():
