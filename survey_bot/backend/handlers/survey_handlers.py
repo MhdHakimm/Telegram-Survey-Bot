@@ -109,7 +109,7 @@ async def _send_question(query, context):
     if q["type"] == "mcq":
         await query.edit_message_text(
             text,
-            reply_markup=_mcq_kb(idx, q["options"]),
+            reply_markup=_mcq_kb(idx, q["options"]["text"]), ###maryam check ths
             parse_mode="Markdown",
         )
 

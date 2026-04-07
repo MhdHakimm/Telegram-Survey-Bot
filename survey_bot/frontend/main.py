@@ -1,3 +1,5 @@
+
+# MARK: New code
 import streamlit as st
 from supabase import create_client
 from dotenv import load_dotenv
@@ -9,18 +11,18 @@ supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 
 st.set_page_config(page_title="Survey Creator Pro", layout="wide")
 
-
 # ── Helpers ────────────────────────────────────────────
 def get_surveys():
     res = supabase.table("survey").select("id, title").execute()
     return res.data if res.data else []
 
-
 def load_survey_from_db(survey_id):
     res = supabase.table("survey").select("*").eq("id", survey_id).execute()
+    if not res.data: return
+    
     survey = res.data[0]
-
     st.session_state.title = survey["title"]
+    st.session_state.introduction = survey.get("introduction", "") # Load Intro
 
     q_res = (
         supabase.table("question")
@@ -31,208 +33,185 @@ def load_survey_from_db(survey_id):
     )
 
     questions = []
-
     for q in q_res.data:
         question = {
             "text": q["question_text"],
             "type": q["question_type"],
             "meta": q.get("meta", {}) or {},
         }
-
-        # MCQ options
-        if q["question_type"] == "mcq":
-            opt_res = (
-                supabase.table("option")
-                .select("*")
-                .eq("question_id", q["id"])
-                .execute()
-            )
-            question["meta"]["options"] = [o["option_text"] for o in opt_res.data]
-
         questions.append(question)
 
     st.session_state.questions = questions
 
-
-def save_survey_to_db(title, questions):
+def save_survey_to_db(title, intro, questions):
     survey_id = st.session_state.survey_id
 
-    # CREATE
+    # Update/Insert Survey Table (Including Introduction)
     if not survey_id:
-        res = supabase.table("survey").insert({"title": title}).execute()
+        res = supabase.table("survey").insert({"title": title, "introduction": intro}).execute()
         survey_id = res.data[0]["id"]
         st.session_state.survey_id = survey_id
-
     else:
-        supabase.table("survey").update({"title": title}).eq("id", survey_id).execute()
-
-        # delete old
-        old_q = (
-            supabase.table("question").select("id").eq("survey_id", survey_id).execute()
-        )
-
-        for q in old_q.data:
-            supabase.table("option").delete().eq("question_id", q["id"]).execute()
-
+        supabase.table("survey").update({"title": title, "introduction": intro}).eq("id", survey_id).execute()
+        # Clear old questions for refresh
         supabase.table("question").delete().eq("survey_id", survey_id).execute()
 
-    # insert new
+    # Insert Questions
     for i, q in enumerate(questions):
-        q_res = (
-            supabase.table("question")
-            .insert(
-                {
-                    "survey_id": survey_id,
-                    "question_text": q["text"],
-                    "question_type": q["type"],
-                    "order_index": i,
-                    "meta": q.get("meta", {}),  # ⭐ IMPORTANT
-                }
-            )
-            .execute()
-        )
-
-        question_id = q_res.data[0]["id"]
-
-        if q["type"] == "mcq":
-            for opt in q["meta"].get("options", []):
-                supabase.table("option").insert(
-                    {"question_id": question_id, "option_text": opt}
-                ).execute()
-
+        supabase.table("question").insert({
+            "survey_id": survey_id,
+            "question_text": q["text"],
+            "question_type": q["type"],
+            "order_index": i,
+            "meta": q.get("meta", {}),
+        }).execute()
 
 # ── State ──────────────────────────────────────────────
-if "mode" not in st.session_state:
-    st.session_state.mode = "list"
-
-if "questions" not in st.session_state:
-    st.session_state.questions = []
-
-if "title" not in st.session_state:
-    st.session_state.title = ""
-
-if "survey_id" not in st.session_state:
-    st.session_state.survey_id = None
-
+if "mode" not in st.session_state: st.session_state.mode = "list"
+if "questions" not in st.session_state: st.session_state.questions = []
+if "title" not in st.session_state: st.session_state.title = ""
+if "introduction" not in st.session_state: st.session_state.introduction = ""
+if "survey_id" not in st.session_state: st.session_state.survey_id = None
 
 # ── UI ─────────────────────────────────────────────────
 st.title("Survey Creator Pro")
 
-# ======================================================
-# LIST VIEW
-# ======================================================
 if st.session_state.mode == "list":
     st.subheader("Your Surveys")
-
     surveys = get_surveys()
-
-    if not surveys:
-        st.write("No surveys yet")
-
     for s in surveys:
         col1, col2 = st.columns([4, 1])
-
         with col1:
             if st.button(s["title"], key=str(s["id"])):
                 st.session_state.survey_id = s["id"]
-                st.session_state.mode = "edit"
                 load_survey_from_db(s["id"])
+                st.session_state.mode = "edit"
                 st.rerun()
-
         with col2:
             if st.button("🗑️", key=f"del_{s['id']}"):
                 supabase.table("survey").delete().eq("id", s["id"]).execute()
                 st.rerun()
-
+    
     st.divider()
-
     if st.button("➕ Create New Survey"):
         st.session_state.title = ""
+        st.session_state.introduction = ""
         st.session_state.questions = []
         st.session_state.survey_id = None
         st.session_state.mode = "edit"
         st.rerun()
 
-
-# ======================================================
-# EDIT VIEW
-# ======================================================
-if st.session_state.mode == "edit":
+elif st.session_state.mode == "edit":
     st.subheader("Edit Survey")
-
-    st.session_state.title = st.text_input("Survey Title", value=st.session_state.title)
+    
+    # ── Survey Info Section ──
+    col_t, col_i = st.columns([1, 2])
+    with col_t:
+        st.session_state.title = st.text_input("Survey Title", value=st.session_state.title)
+    with col_i:
+        st.session_state.introduction = st.text_area("Survey Introduction/Instructions", 
+                                                    value=st.session_state.introduction, 
+                                                    placeholder="Welcome to our survey! Please answer honestly...")
 
     st.divider()
-
-    # Add Question
+    
+    # ── Add Question Section ──
     st.write("### Add Question")
-
-    q_text = st.text_input("Question")
+    q_text = st.text_input("Question Text")
     q_type = st.selectbox("Type", ["mcq", "text", "ranking", "likert", "image"])
-
     q_meta = {}
 
+    # 1. MCQ
     if q_type == "mcq":
-        opt_input = st.text_area("Options (one per line)")
-        q_meta["options"] = [o.strip() for o in opt_input.split("\n") if o.strip()]
+        st.caption("Define options and where they jump to (use 99 for 'End Survey')")
+        if "temp_options" not in st.session_state:
+            st.session_state.temp_options = [{"text": "", "skip": 0}] #maryam 
+        
+        for idx, opt in enumerate(st.session_state.temp_options):
+            c1, c2 = st.columns([3, 1])
+            opt["text"] = c1.text_input(f"Option {idx+1}", value=opt["text"], key=f"opt_txt_{idx}")
+            opt["skip"] = c2.number_input(f"Skip to Q#", value=opt["skip"], key=f"opt_skp_{idx}")
+        
+        if st.button("➕ Add Option"):
+            st.session_state.temp_options.append({"text": "", "skip": 0})
+            st.rerun()
+        q_meta["options"] = st.session_state.temp_options
 
+    # 2. Ranking (Updated to match Likert style setup)
     elif q_type == "ranking":
-        q_meta["num_items"] = st.slider("Number of items", 2, 5, 3)
+        num_items = st.slider("How many items to rank?", 2, 5, 3)
+        q_meta["items"] = []
+        st.write("Define items to be ranked:")
+        cols = st.columns(num_items)
+        for i in range(num_items):
+            item_val = cols[i].text_input(f"Item {i+1}", key=f"rank_setup_{i}")
+            q_meta["items"].append(item_val)
 
+    # 3. Likert
     elif q_type == "likert":
-        q_meta["scale"] = st.slider("Scale", 3, 6, 3)
+        scale = st.slider("Scale size", 3, 6, 5)
+        q_meta["scale"] = scale
+        q_meta["labels"] = {}
+        st.write("Define Labels (e.g., 1=Poor, 5=Excellent)")
+        cols = st.columns(scale)
+        for i in range(scale):
+            q_meta["labels"][str(i+1)] = cols[i].text_input(f"Label {i+1}", key=f"lik_lbl_{i}")
 
+    # 4. Text
+    elif q_type == "text":
+        q_meta["word_limit"] = st.number_input("Word Limit", min_value=1, max_value=500, value=150)
+
+    # 5. Image
     elif q_type == "image":
         q_meta["image_url"] = st.text_input("Image URL")
 
-    # skip logic
-    skip_to = st.number_input("Skip to question (0 = none)", 0)
-    if skip_to > 0:
-        q_meta["skip_to"] = int(skip_to)
-
-    if st.button("Add Question"):
+    if st.button("Add Question to Survey"):
         if q_text:
-            st.session_state.questions.append(
-                {"text": q_text, "type": q_type, "meta": q_meta}
-            )
+            st.session_state.questions.append({"text": q_text, "type": q_type, "meta": q_meta})
+            # Clean up temp state
+            if "temp_options" in st.session_state: del st.session_state.temp_options
             st.rerun()
 
     st.divider()
-
-    # Preview
-    st.write("### Preview")
+    
+    # ── Preview Section ──
+    st.write("### Live Preview")
+    if st.session_state.introduction:
+        st.info(st.session_state.introduction)
 
     for i, q in enumerate(st.session_state.questions):
         st.markdown(f"**{i+1}. {q['text']}**")
-
+        
         if q["type"] == "mcq":
-            st.radio("Select", q["meta"].get("options", []), key=f"p_{i}")
-
-        elif q["type"] == "text":
-            st.text_input("Answer", key=f"t_{i}")
+            opts = [o["text"] for o in q["meta"].get("options", [])]
+            choice = st.radio("Select", opts, key=f"p_{i}")
 
         elif q["type"] == "ranking":
-            for r in range(q["meta"].get("num_items", 3)):
-                st.text_input(f"Rank {r+1}", key=f"r_{i}_{r}")
+            items = q["meta"].get("items", [])
+            for idx, item in enumerate(items):
+                st.selectbox(f"Rank {idx+1}:", ["--Select--"] + items, key=f"p_rank_{i}_{idx}")
 
         elif q["type"] == "likert":
-            cols = st.columns(q["meta"].get("scale", 3))
-            for j in range(q["meta"].get("scale", 3)):
-                cols[j].button(str(j + 1), key=f"l_{i}_{j}")
+            labels = q["meta"].get("labels", {})
+            scale_size = q["meta"].get("scale", 3)
+            cols = st.columns(scale_size)
+            for j in range(scale_size):
+                lbl = labels.get(str(j+1), "")
+                cols[j].button(f"{j+1}\n{lbl}", key=f"l_{i}_{j}", use_container_width=True)
+
+        elif q["type"] == "text":
+            limit = q["meta"].get("word_limit", 150)
+            st.text_area(f"Answer box (Limit: {limit} words)", key=f"t_{i}")
 
         elif q["type"] == "image":
-            if q["meta"].get("image_url"):
-                st.image(q["meta"]["image_url"])
-
-        if q["meta"].get("skip_to"):
-            st.caption(f"→ jumps to Q{q['meta']['skip_to']}")
+            if q["meta"].get("image_url"): st.image(q["meta"]["image_url"])
 
     st.divider()
-
-    if st.button("💾 Save"):
-        save_survey_to_db(st.session_state.title, st.session_state.questions)
-        st.success("Saved")
-
-    if st.button("⬅ Back"):
+    col_save, col_back = st.columns(2)
+    if col_save.button("💾 Save to Database", use_container_width=True):
+        save_survey_to_db(st.session_state.title, st.session_state.introduction, st.session_state.questions)
+        st.success("Survey, Introduction, and Logic saved!")
+    
+    if col_back.button("⬅ Back to Menu", use_container_width=True):
         st.session_state.mode = "list"
         st.rerun()
